@@ -58,13 +58,21 @@
 
 #define RB_SOFTCONFIG_VER		"0.03"
 #define RB_SC_PR_PFX			"[rb_softconfig] "
+#define SOFT_CONF_FIXED_SIZE 0x1000
+
+/* adaptations that necessary to work on the anh79 platform with a 64k sector */
+#if defined(CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF)
+#define CONFIG_MIKROTIK_RB_64K_SOFT_CONF 1
+#define RB_MTD_SC_ERASER "sc_eraser"
+#define RB_MTD_BOOTLOADER2 "bootloader2"
+#endif
 
 /*
  * mtd operations before 4.17 are asynchronous, not handled by this code
  * Also make the driver act read-only if 4K_SECTORS are not enabled, since they
  * are require to handle partial erasing of the small soft_config partition.
  */
-#if defined(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
+#if defined(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS) || defined(CONFIG_MIKROTIK_RB_64K_SOFT_CONF)
  #define RB_SC_HAS_WRITE_SUPPORT	true
  #define RB_SC_WMODE			S_IWUSR
  #define RB_SC_RMODE			S_IRUSR
@@ -610,6 +618,62 @@ static ssize_t sc_commit_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return out - buf;
 }
 
+#if defined(CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF)
+/* Doing backup routerboot2 part, then erase sc_eraser part
+	 and then restore back routerboot2 part */
+static int erase_sc_eraser(void) {
+	struct mtd_info *mtd;
+	struct erase_info ei;
+	size_t bytes_rw, buflen;
+	char *buf;
+	int ret;
+
+	/* backup routerboot2 part */
+	mtd = get_mtd_device_nm(RB_MTD_BOOTLOADER2);
+	if (IS_ERR(mtd))
+		return -ENODEV;
+	buflen = mtd->size;
+	buf = kmalloc(buflen, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	ret = mtd_read(mtd, 0, buflen, &bytes_rw, buf);
+	if (ret)
+		goto end;
+	if (bytes_rw != buflen) {
+		ret = -EIO;
+		goto end;
+	}
+
+	/* doing erase */
+	mtd = get_mtd_device_nm(RB_MTD_SC_ERASER);
+	if (IS_ERR(mtd)) {
+		ret = -ENODEV;
+		goto end;
+	}
+	mtd->flags |= MTD_WRITEABLE;
+	ei.addr = 0;
+	ei.len = mtd->size;
+	ret = mtd_erase(mtd, &ei);
+	if (ret)
+		goto mtd_write_end;
+
+	/* restore routerboot2 part */
+	ret = mtd_write(mtd, 0, buflen, &bytes_rw, buf);
+	if (ret)
+		goto mtd_write_end;
+	if (bytes_rw != buflen) {
+		ret = -EIO;
+		goto mtd_write_end;
+	}
+mtd_write_end:
+	mtd->flags &= ~MTD_WRITEABLE;
+end:
+	if(buf)
+		kfree(buf);
+	return ret;
+}
+#endif /* CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF */
+
 /*
  * Performs buffer flushing:
  * This routine expects an input compatible with kstrtobool().
@@ -626,6 +690,7 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
 	size_t bytes_rw, ret = count;
 	bool flush;
 	u32 crc;
+	uint32_t flags_backup;
 
 	if (!RB_SC_HAS_WRITE_SUPPORT)
 		return -EOPNOTSUPP;
@@ -645,9 +710,10 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
 	if (IS_ERR(mtd))
 		return -ENODEV;
 
+	flags_backup = mtd->flags;
 	write_lock(&sc_bufrwl);
 	if (!flush)	// reread
-		ret = mtd_read(mtd, 0, mtd->size, &bytes_rw, sc_buf);
+		ret = mtd_read(mtd, 0, sc_buflen, &bytes_rw, sc_buf);
 	else {	// crc32 + commit
 		/*
 		 * CRC32 is computed on the entire buffer, excluding the CRC
@@ -665,11 +731,20 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
 		 * in a single eraseblock.
 		 */
 
+		//temporary enable write access
+		mtd->flags |= MTD_WRITEABLE;
+
+#if defined(CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF)
+		ret = erase_sc_eraser();
+#else
 		ei.addr = 0;
 		ei.len = mtd->size;
 		ret = mtd_erase(mtd, &ei);
+#endif /* CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF */
 		if (!ret)
-			ret = mtd_write(mtd, 0, mtd->size, &bytes_rw, sc_buf);
+			ret = mtd_write(mtd, 0, sc_buflen, &bytes_rw, sc_buf);
+
+		mtd->flags = flags_backup;
 
 		/*
 		 * Handling mtd_write() failure here is a tricky situation. The
@@ -718,8 +793,11 @@ int __init rb_softconfig_init(struct kobject *rb_kobj)
 	mtd = get_mtd_device_nm(RB_MTD_SOFT_CONFIG);
 	if (IS_ERR(mtd))
 		return -ENODEV;
-
+#if defined(CONFIG_MIKROTIK_RB_64K_SOFT_CONF)
+	sc_buflen = mtd->size > SOFT_CONF_FIXED_SIZE ? SOFT_CONF_FIXED_SIZE : mtd->size;
+#else
 	sc_buflen = mtd->size;
+#endif
 	sc_buf = kmalloc(sc_buflen, GFP_KERNEL);
 	if (!sc_buf)
 		return -ENOMEM;

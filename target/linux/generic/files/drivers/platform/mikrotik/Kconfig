@@ -16,4 +16,17 @@ config MIKROTIK_RB_SYSFS
 	help
 	  This driver exposes RouterBoot configuration in sysfs.
 
+config MIKROTIK_RB_64K_SOFT_CONF
+	tristate "RouterBoot soft_config 64k mtd write support"
+	depends on MIKROTIK_RB_SYSFS
+	help
+	  Enable write access to soft-config 64k mtd(without need of 4K sectors)
+
+config MIKROTIK_ATH79_RB_64K_SOFT_CONF
+	tristate "RouterBoot soft_config 64k mtd write support for ath79 platform"
+	depends on MIKROTIK_RB_SYSFS && ATH79
+	help
+	  Enable write access to soft-config 64k mtd(without need of 4K sectors)
+	  on ath79 platform(by using sc_erase mtd)
+
 endif # MIKROTIK

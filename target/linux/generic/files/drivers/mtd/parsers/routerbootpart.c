@@ -82,6 +82,10 @@
 #define RB_MAGIC_SOFT	(('S') | ('o' << 8) | ('f' << 16) | ('t' << 24))
 #define RB_BLOCK_SIZE	0x1000
 
+#if defined(CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF)
+#define RB_MTD_SC_ERASER "sc_eraser"
+#endif /* CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF */
+
 struct routerboot_dynpart {
 	const char * const name;
 	const u32 magic;
@@ -301,7 +305,11 @@ static int routerboot_partitions_parse(struct mtd_info *master,
 			}
 		}
 
-		if (np > 0) {
+		while (np > 0) {
+#if defined(CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF)
+			if (!strcmp(partname, RB_MTD_SC_ERASER))
+				break;
+#endif /* CONFIG_MIKROTIK_ATH79_RB_64K_SOFT_CONF */
 			/* Minor sanity check for overlaps */
 			if (offset < (parts[np-1].offset + parts[np-1].size)) {
 				pr_err("%s: routerboot partition %pOF (%pOF) \"%s\" overlaps with previous partition \"%s\".\n",
@@ -313,6 +321,7 @@ static int routerboot_partitions_parse(struct mtd_info *master,
 			/* Fixup end of previous partition if necessary */
 			if (!parts[np-1].size)
 				parts[np-1].size = (offset - parts[np-1].offset);
+			break;
 		}
 
 		if ((offset + size) > master->size) {
