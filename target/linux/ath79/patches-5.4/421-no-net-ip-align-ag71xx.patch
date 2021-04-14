@@ -1,0 +1,13 @@
+diff -rNu a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c
+--- a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2021-04-14 05:50:01.362109450 +0300
++++ b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2021-04-13 20:26:42.413489202 +0300
+@@ -1640,7 +1640,8 @@
+ 
+ 	ag->rx_buf_offset = NET_SKB_PAD;
+ 	if (!of_device_is_compatible(np, "qca,ar7100-eth") &&
+-	    !of_device_is_compatible(np, "qca,ar9130-eth"))
++	    !of_device_is_compatible(np, "qca,ar9130-eth") &&
++	    !of_property_read_bool(np, "no-net-ip-align"))
+ 		ag->rx_buf_offset += NET_IP_ALIGN;
+ 
+ 	if (of_device_is_compatible(np, "qca,ar7100-eth")) {
