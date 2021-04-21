@@ -8,6 +8,11 @@ DEVICE_VARS += LOADER_FLASH_MAX LOADER_KERNEL_MAGIC
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
 DEVICE_VARS += RAS_BOARD RAS_ROOTFS_SIZE RAS_VERSION
 
+define Device/dsa-migration
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA
+endef
+
 define Build/combined-image
 	sh $(TOPDIR)/scripts/combined-image.sh \
 		"$(IMAGE_KERNEL)" \

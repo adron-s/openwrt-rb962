@@ -1,4 +1,6 @@
 define Device/mikrotik
+  $(Device/dsa-migration)
+	BLOCKSIZE := 64k
 	DEVICE_VENDOR := MikroTik
 	KERNEL_NAME := vmlinuz
 	KERNEL := kernel-bin | append-dtb-elf
