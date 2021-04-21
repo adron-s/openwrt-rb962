@@ -1,0 +1,22 @@
+diff -rNu a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c
+--- a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2021-04-16 07:29:04.040152161 +0300
++++ b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2021-04-16 07:31:21.032400786 +0300
+@@ -1513,6 +1513,7 @@
+ 	const void *mac_addr;
+ 	u32 max_frame_len;
+ 	int tx_size, err;
++	const char *name;
+ 
+ 	if (!np)
+ 		return -ENODEV;
+@@ -1521,6 +1522,10 @@
+ 	if (!dev)
+ 		return -ENOMEM;
+ 
++	name = of_get_property(np, "label", NULL);
++	if(name)
++		strcpy(dev->name, name);
++
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res)
+ 		return -EINVAL;

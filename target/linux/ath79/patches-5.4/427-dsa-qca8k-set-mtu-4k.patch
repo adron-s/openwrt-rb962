@@ -1,0 +1,75 @@
+diff -rNu a/drivers/net/dsa/qca8k.c b/drivers/net/dsa/qca8k.c
+--- a/drivers/net/dsa/qca8k.c	2021-02-07 16:35:50.000000000 +0200
++++ b/drivers/net/dsa/qca8k.c	2021-04-18 06:25:18.815256337 +0300
+@@ -1021,6 +1021,41 @@
+ 	return DSA_TAG_PROTO_QCA;
+ }
+ 
++static int
++qca8k_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
++{
++	struct qca8k_priv *priv = (struct qca8k_priv *)ds->priv;
++	int length;
++	u32 val;
++
++	/* When a new MTU is set, DSA always set the CPU port's MTU to the
++	 * largest MTU of the slave ports. Because the switch only has a global
++	 * RX length register, only allowing CPU port here is enough.
++	 */
++	if (!dsa_is_cpu_port(ds, port))
++		return 0;
++
++	length = new_mtu + ETH_HLEN + QCA8K_HDR_LEN + ETH_FCS_LEN;
++	val = length;
++
++	if(val > QCA8K_MAX_FRAME_SIZE) {
++		val = QCA8K_MAX_FRAME_SIZE;
++		pr_warn("qca8k max frame size is truncated from %d to %d!\n", length, val);
++	}
++
++	mutex_lock(&priv->reg_mutex);
++	qca8k_write(priv, QCA8K_REG_MAX_FRAME_SIZE, val);
++	mutex_unlock(&priv->reg_mutex);
++
++	return 0;
++}
++
++static int
++qca8k_port_max_mtu(struct dsa_switch *ds, int port)
++{
++	return QCA8K_MAX_MTU;
++}
++
+ static const struct dsa_switch_ops qca8k_switch_ops = {
+ 	.get_tag_protocol	= qca8k_get_tag_protocol,
+ 	.setup			= qca8k_setup,
+@@ -1032,6 +1067,8 @@
+ 	.set_mac_eee		= qca8k_set_mac_eee,
+ 	.port_enable		= qca8k_port_enable,
+ 	.port_disable		= qca8k_port_disable,
++	.port_change_mtu	= qca8k_port_change_mtu,
++	.port_max_mtu		= qca8k_port_max_mtu,
+ 	.port_stp_state_set	= qca8k_port_stp_state_set,
+ 	.port_bridge_join	= qca8k_port_bridge_join,
+ 	.port_bridge_leave	= qca8k_port_bridge_leave,
+diff -rNu a/drivers/net/dsa/qca8k.h b/drivers/net/dsa/qca8k.h
+--- a/drivers/net/dsa/qca8k.h	2021-02-07 16:35:50.000000000 +0200
++++ b/drivers/net/dsa/qca8k.h	2021-04-18 06:52:13.689731138 +0300
+@@ -28,6 +28,7 @@
+ #define QCA8K_REG_PORT0_PAD_CTRL			0x004
+ #define QCA8K_REG_PORT5_PAD_CTRL			0x008
+ #define QCA8K_REG_PORT6_PAD_CTRL			0x00c
++#define QCA8K_REG_MAX_FRAME_SIZE			0x078
+ #define   QCA8K_PORT_PAD_RGMII_EN			BIT(26)
+ #define   QCA8K_PORT_PAD_RGMII_TX_DELAY(x)		\
+ 						((0x8 + (x & 0x3)) << 22)
+@@ -77,6 +78,9 @@
+ #define   QCA8K_PORT_HDR_CTRL_ALL			2
+ #define   QCA8K_PORT_HDR_CTRL_MGMT			1
+ #define   QCA8K_PORT_HDR_CTRL_NONE			0
++#define		QCA8K_HDR_LEN	2
++#define		QCA8K_MAX_FRAME_SIZE	(SZ_4K - 2)
++#define 	QCA8K_MAX_MTU	(QCA8K_MAX_FRAME_SIZE - ETH_HLEN - ETH_FCS_LEN - QCA8K_HDR_LEN)
+ 
+ /* EEE control registers */
+ #define QCA8K_REG_EEE_CTRL				0x100

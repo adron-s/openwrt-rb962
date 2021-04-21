@@ -1,0 +1,13 @@
+diff -rNu a/net/dsa/slave.c b/net/dsa/slave.c
+--- a/net/dsa/slave.c	2021-03-30 06:11:33.739350161 +0300
++++ b/net/dsa/slave.c	2021-03-30 10:35:33.028781191 +0300
+@@ -1582,6 +1582,9 @@
+ 		goto out_gcells;
+ 	}
+ 
++	if(slave_dev->phydev)
++		genphy_suspend(slave_dev->phydev);
++
+ 	dsa_slave_notify(slave_dev, DSA_PORT_REGISTER);
+ 
+ 	ret = register_netdev(slave_dev);

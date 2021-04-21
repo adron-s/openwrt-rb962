@@ -1,0 +1,59 @@
+diff -rNu a/drivers/net/ethernet/atheros/ag71xx/ag71xx_phy.c b/drivers/net/ethernet/atheros/ag71xx/ag71xx_phy.c
+--- a/drivers/net/ethernet/atheros/ag71xx/ag71xx_phy.c	2021-02-09 13:47:47.000000000 +0200
++++ b/drivers/net/ethernet/atheros/ag71xx/ag71xx_phy.c	2021-04-15 14:04:50.855127149 +0300
+@@ -47,7 +47,7 @@
+ {
+ 	struct device_node *np = ag->pdev->dev.of_node;
+ 	struct device_node *phy_node;
+-	int ret;
++	int ret, a;
+ 
+ 	if (of_phy_is_fixed_link(np)) {
+ 		ret = of_phy_register_fixed_link(np);
+@@ -62,14 +62,39 @@
+ 		phy_node = of_parse_phandle(np, "phy-handle", 0);
+ 	}
+ 
+-	if (!phy_node) {
+-		dev_err(&ag->pdev->dev,
+-			"Could not find valid phy node\n");
+-		return -ENODEV;
+-	}
++	for (a = 0; a < 2; a++) {
++		if (!phy_node) {
++			dev_err(&ag->pdev->dev,
++				"Could not find valid phy node\n");
++			return -ENODEV;
++		}
++
++		ag->phy_dev = of_phy_connect(ag->dev, phy_node, ag71xx_phy_link_adjust,
++					     0, ag->phy_if_mode);
+ 
+-	ag->phy_dev = of_phy_connect(ag->dev, phy_node, ag71xx_phy_link_adjust,
+-				     0, ag->phy_if_mode);
++		/* on the first loop, we try to use fallback-phy as last chance phy */
++		if (!ag->phy_dev && !a) {
++			struct device_node *fallback_np = of_find_node_by_name(np, "fallback-phy");
++			if (!fallback_np)
++				break;
++			dev_err(&ag->pdev->dev, "Trying to use fallback-phy node\n");
++			if (!of_phy_is_fixed_link(fallback_np)) {
++				of_node_put(fallback_np);
++				break;
++			}
++			ret = of_phy_register_fixed_link(fallback_np);
++			if (ret < 0) {
++				of_node_put(fallback_np);
++				break;
++			}
++			of_node_put(phy_node);
++			phy_node = of_node_get(fallback_np);
++			of_node_put(fallback_np);
++			continue;
++		}
++
++		break;
++	}
+ 
+ 	of_node_put(phy_node);
+ 

@@ -1,0 +1,306 @@
+diff -rNu a/include/net/dsa.h b/include/net/dsa.h
+--- a/include/net/dsa.h	2021-03-29 11:06:47.873403536 +0300
++++ b/include/net/dsa.h	2021-03-29 08:42:51.116314915 +0300
+@@ -443,6 +443,16 @@
+ 	void	(*port_disable)(struct dsa_switch *ds, int port);
+ 
+ 	/*
++	 * MTU change functionality. Switches can also adjust their MRU through
++	 * this method. By MTU, one understands the SDU (L2 payload) length.
++	 * If the switch needs to account for the DSA tag on the CPU port, this
++	 * method needs to to do so privately.
++	 */
++	int	(*port_change_mtu)(struct dsa_switch *ds, int port,
++				   int new_mtu);
++	int	(*port_max_mtu)(struct dsa_switch *ds, int port);
++
++	/*
+ 	 * Port's MAC EEE settings
+ 	 */
+ 	int	(*set_mac_eee)(struct dsa_switch *ds, int port,
+diff -rNu a/net/dsa/dsa_priv.h b/net/dsa/dsa_priv.h
+--- a/net/dsa/dsa_priv.h	2021-03-29 11:06:47.869403311 +0300
++++ b/net/dsa/dsa_priv.h	2021-03-29 08:46:16.488809411 +0300
+@@ -23,6 +23,7 @@
+ 	DSA_NOTIFIER_MDB_DEL,
+ 	DSA_NOTIFIER_VLAN_ADD,
+ 	DSA_NOTIFIER_VLAN_DEL,
++	DSA_NOTIFIER_MTU,
+ };
+ 
+ /* DSA_NOTIFIER_AGEING_TIME */
+@@ -31,6 +32,14 @@
+ 	unsigned int ageing_time;
+ };
+ 
++/* DSA_NOTIFIER_MTU */
++struct dsa_notifier_mtu_info {
++	bool propagate_upstream;
++	int sw_index;
++	int port;
++	int mtu;
++};
++
+ /* DSA_NOTIFIER_BRIDGE_* */
+ struct dsa_notifier_bridge_info {
+ 	struct net_device *br;
+@@ -142,6 +151,8 @@
+ bool dsa_port_skip_vlan_configuration(struct dsa_port *dp);
+ int dsa_port_ageing_time(struct dsa_port *dp, clock_t ageing_clock,
+ 			 struct switchdev_trans *trans);
++int dsa_port_mtu_change(struct dsa_port *dp, int new_mtu,
++			bool propagate_upstream);
+ int dsa_port_fdb_add(struct dsa_port *dp, const unsigned char *addr,
+ 		     u16 vid);
+ int dsa_port_fdb_del(struct dsa_port *dp, const unsigned char *addr,
+diff -rNu a/net/dsa/master.c b/net/dsa/master.c
+--- a/net/dsa/master.c	2021-02-07 16:35:50.000000000 +0200
++++ b/net/dsa/master.c	2021-03-29 08:47:07.131838957 +0300
+@@ -285,20 +285,6 @@
+ 	.attrs	= dsa_slave_attrs,
+ };
+ 
+-static void dsa_master_set_mtu(struct net_device *dev, struct dsa_port *cpu_dp)
+-{
+-	unsigned int mtu = ETH_DATA_LEN + cpu_dp->tag_ops->overhead;
+-	int err;
+-
+-	rtnl_lock();
+-	if (mtu <= dev->max_mtu) {
+-		err = dev_set_mtu(dev, mtu);
+-		if (err)
+-			netdev_dbg(dev, "Unable to set MTU to include for DSA overheads\n");
+-	}
+-	rtnl_unlock();
+-}
+-
+ static void dsa_master_reset_mtu(struct net_device *dev)
+ {
+ 	int err;
+@@ -315,7 +301,12 @@
+ {
+ 	int ret;
+ 
+-	dsa_master_set_mtu(dev,  cpu_dp);
++	rtnl_lock();
++	ret = dev_set_mtu(dev, ETH_DATA_LEN + cpu_dp->tag_ops->overhead);
++	rtnl_unlock();
++	if (ret)
++		netdev_warn(dev, "error %d setting MTU to include DSA overhead\n",
++			    ret);
+ 
+ 	/* If we use a tagging format that doesn't have an ethertype
+ 	 * field, make sure that all packets from this point on get
+diff -rNu a/net/dsa/port.c b/net/dsa/port.c
+--- a/net/dsa/port.c	2021-03-29 11:06:47.865403085 +0300
++++ b/net/dsa/port.c	2021-03-29 08:47:50.594425681 +0300
+@@ -311,6 +311,19 @@
+ 	return ds->ops->port_egress_floods(ds, port, true, mrouter);
+ }
+ 
++int dsa_port_mtu_change(struct dsa_port *dp, int new_mtu,
++			bool propagate_upstream)
++{
++	struct dsa_notifier_mtu_info info = {
++		.sw_index = dp->ds->index,
++		.propagate_upstream = propagate_upstream,
++		.port = dp->index,
++		.mtu = new_mtu,
++	};
++
++	return dsa_port_notify(dp, DSA_NOTIFIER_MTU, &info);
++}
++
+ int dsa_port_fdb_add(struct dsa_port *dp, const unsigned char *addr,
+ 		     u16 vid)
+ {
+diff -rNu a/net/dsa/slave.c b/net/dsa/slave.c
+--- a/net/dsa/slave.c	2021-03-29 11:06:48.177420638 +0300
++++ b/net/dsa/slave.c	2021-03-29 08:50:19.943234260 +0300
+@@ -1174,6 +1174,96 @@
+ 	return dsa_port_vid_del(dp, vid);
+ }
+ 
++static int dsa_slave_change_mtu(struct net_device *dev, int new_mtu)
++{
++	struct net_device *master = dsa_slave_to_master(dev);
++	struct dsa_port *dp = dsa_slave_to_port(dev);
++	struct dsa_slave_priv *p = netdev_priv(dev);
++	struct dsa_switch *ds = p->dp->ds;
++	struct dsa_port *cpu_dp;
++	int port = p->dp->index;
++	int largest_mtu = 0;
++	int new_master_mtu;
++	int old_master_mtu;
++	int mtu_limit;
++	int cpu_mtu;
++	int err, i;
++
++	if (!ds->ops->port_change_mtu)
++		return -EOPNOTSUPP;
++
++	for (i = 0; i < ds->num_ports; i++) {
++		int slave_mtu;
++
++		if (!dsa_is_user_port(ds, i))
++			continue;
++
++		/* During probe, this function will be called for each slave
++		 * device, while not all of them have been allocated. That's
++		 * ok, it doesn't change what the maximum is, so ignore it.
++		 */
++		if (!dsa_to_port(ds, i)->slave)
++			continue;
++
++		/* Pretend that we already applied the setting, which we
++		 * actually haven't (still haven't done all integrity checks)
++		 */
++		if (i == port)
++			slave_mtu = new_mtu;
++		else
++			slave_mtu = dsa_to_port(ds, i)->slave->mtu;
++
++		if (largest_mtu < slave_mtu)
++			largest_mtu = slave_mtu;
++	}
++
++	cpu_dp = dsa_to_port(ds, port)->cpu_dp;
++
++	mtu_limit = min_t(int, master->max_mtu, dev->max_mtu);
++	old_master_mtu = master->mtu;
++	new_master_mtu = largest_mtu + cpu_dp->tag_ops->overhead;
++	if (new_master_mtu > mtu_limit)
++		return -ERANGE;
++
++	/* If the master MTU isn't over limit, there's no need to check the CPU
++	 * MTU, since that surely isn't either.
++	 */
++	cpu_mtu = largest_mtu;
++
++	/* Start applying stuff */
++	if (new_master_mtu != old_master_mtu) {
++		err = dev_set_mtu(master, new_master_mtu);
++		if (err < 0)
++			goto out_master_failed;
++
++		/* We only need to propagate the MTU of the CPU port to
++		 * upstream switches.
++		 */
++		err = dsa_port_mtu_change(cpu_dp, cpu_mtu, true);
++		if (err)
++			goto out_cpu_failed;
++	}
++
++	err = dsa_port_mtu_change(dp, new_mtu, false);
++	if (err)
++		goto out_port_failed;
++
++	dev->mtu = new_mtu;
++
++	return 0;
++
++out_port_failed:
++	if (new_master_mtu != old_master_mtu)
++		dsa_port_mtu_change(cpu_dp, old_master_mtu -
++				    cpu_dp->tag_ops->overhead,
++				    true);
++out_cpu_failed:
++	if (new_master_mtu != old_master_mtu)
++		dev_set_mtu(master, old_master_mtu);
++out_master_failed:
++	return err;
++}
++
+ static const struct ethtool_ops dsa_slave_ethtool_ops = {
+ 	.get_drvinfo		= dsa_slave_get_drvinfo,
+ 	.get_regs_len		= dsa_slave_get_regs_len,
+@@ -1270,6 +1360,7 @@
+ 	.ndo_vlan_rx_add_vid	= dsa_slave_vlan_rx_add_vid,
+ 	.ndo_vlan_rx_kill_vid	= dsa_slave_vlan_rx_kill_vid,
+ 	.ndo_get_devlink_port	= dsa_slave_get_devlink_port,
++	.ndo_change_mtu		= dsa_slave_change_mtu,
+ #if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
+ 	.ndo_flow_offload_check	 = dsa_flow_offload_check,
+ #endif
+@@ -1446,7 +1537,10 @@
+ 	slave_dev->priv_flags |= IFF_NO_QUEUE;
+ 	slave_dev->netdev_ops = &dsa_slave_netdev_ops;
+ 	slave_dev->min_mtu = 0;
+-	slave_dev->max_mtu = ETH_MAX_MTU;
++	if (ds->ops->port_max_mtu)
++		slave_dev->max_mtu = ds->ops->port_max_mtu(ds, port->index);
++	else
++		slave_dev->max_mtu = ETH_MAX_MTU;
+ 	SET_NETDEV_DEVTYPE(slave_dev, &dsa_type);
+ 
+ 	SET_NETDEV_DEV(slave_dev, port->ds->dev);
+@@ -1471,6 +1565,15 @@
+ 	p->xmit = cpu_dp->tag_ops->xmit;
+ 	port->slave = slave_dev;
+ 
++	rtnl_lock();
++	ret = dsa_slave_change_mtu(slave_dev, ETH_DATA_LEN);
++	rtnl_unlock();
++	if (ret && ret != -EOPNOTSUPP) {
++		dev_err(ds->dev, "error %d setting MTU on port %d\n",
++			ret, port->index);
++		goto out_free;
++	}
++
+ 	netif_carrier_off(slave_dev);
+ 
+ 	ret = dsa_slave_phy_setup(slave_dev);
+diff -rNu a/net/dsa/switch.c b/net/dsa/switch.c
+--- a/net/dsa/switch.c	2021-02-07 16:35:50.000000000 +0200
++++ b/net/dsa/switch.c	2021-03-29 08:51:27.879206458 +0300
+@@ -29,6 +29,40 @@
+ 	return ageing_time;
+ }
+ 
++static bool dsa_switch_mtu_match(struct dsa_switch *ds, int port,
++				 struct dsa_notifier_mtu_info *info)
++{
++	if (ds->index == info->sw_index)
++		return (port == info->port) || dsa_is_dsa_port(ds, port);
++
++	if (!info->propagate_upstream)
++		return false;
++
++	if (dsa_is_dsa_port(ds, port) || dsa_is_cpu_port(ds, port))
++		return true;
++
++	return false;
++}
++
++static int dsa_switch_mtu(struct dsa_switch *ds,
++			  struct dsa_notifier_mtu_info *info)
++{
++	int port, ret;
++
++	if (!ds->ops->port_change_mtu)
++		return -EOPNOTSUPP;
++
++	for (port = 0; port < ds->num_ports; port++) {
++		if (dsa_switch_mtu_match(ds, port, info)) {
++			ret = ds->ops->port_change_mtu(ds, port, info->mtu);
++			if (ret)
++				return ret;
++		}
++	}
++
++	return 0;
++}
++
+ static int dsa_switch_ageing_time(struct dsa_switch *ds,
+ 				  struct dsa_notifier_ageing_time_info *info)
+ {
+@@ -328,6 +362,9 @@
+ 	case DSA_NOTIFIER_VLAN_DEL:
+ 		err = dsa_switch_vlan_del(ds, info);
+ 		break;
++	case DSA_NOTIFIER_MTU:
++		err = dsa_switch_mtu(ds, info);
++		break;
+ 	default:
+ 		err = -EOPNOTSUPP;
+ 		break;
