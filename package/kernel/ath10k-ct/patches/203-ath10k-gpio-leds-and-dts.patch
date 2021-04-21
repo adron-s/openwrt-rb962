@@ -1,0 +1,327 @@
+diff -rNu a/ath10k-5.10/core.c b/ath10k-5.10/core.c
+--- a/ath10k-5.10/core.c	2021-04-17 06:38:38.390480353 +0300
++++ b/ath10k-5.10/core.c	2021-04-16 12:35:15.997442351 +0300
+@@ -69,7 +69,6 @@
+ 		.dev_id = QCA988X_2_0_DEVICE_ID,
+ 		.bus = ATH10K_BUS_PCI,
+ 		.name = "qca988x hw2.0",
+-		.led_pin = 1,
+ 		.patch_load_addr = QCA988X_HW_2_0_PATCH_LOAD_ADDR,
+ 		.uart_pin = 7,
+ 		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_ALL,
+@@ -140,7 +139,6 @@
+ 		.dev_id = QCA9887_1_0_DEVICE_ID,
+ 		.bus = ATH10K_BUS_PCI,
+ 		.name = "qca9887 hw1.0",
+-		.led_pin = 1,
+ 		.patch_load_addr = QCA9887_HW_1_0_PATCH_LOAD_ADDR,
+ 		.uart_pin = 7,
+ 		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_ALL,
+@@ -350,7 +348,6 @@
+ 		.dev_id = QCA99X0_2_0_DEVICE_ID,
+ 		.bus = ATH10K_BUS_PCI,
+ 		.name = "qca99x0 hw2.0",
+-		.led_pin = 17,
+ 		.patch_load_addr = QCA99X0_HW_2_0_PATCH_LOAD_ADDR,
+ 		.uart_pin = 7,
+ 		.otp_exe_param = 0x00000700,
+@@ -392,7 +389,6 @@
+ 		.dev_id = QCA9984_1_0_DEVICE_ID,
+ 		.bus = ATH10K_BUS_PCI,
+ 		.name = "qca9984/qca9994 hw1.0",
+-		.led_pin = 17,
+ 		.patch_load_addr = QCA9984_HW_1_0_PATCH_LOAD_ADDR,
+ 		.uart_pin = 7,
+ 		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_EACH,
+@@ -441,7 +437,6 @@
+ 		.dev_id = QCA9888_2_0_DEVICE_ID,
+ 		.bus = ATH10K_BUS_PCI,
+ 		.name = "qca9888 hw2.0",
+-		.led_pin = 17,
+ 		.patch_load_addr = QCA9888_HW_2_0_PATCH_LOAD_ADDR,
+ 		.uart_pin = 7,
+ 		.cc_wraparound_type = ATH10K_HW_CC_WRAP_SHIFTED_EACH,
+diff -rNu a/ath10k-5.10/core.h b/ath10k-5.10/core.h
+--- a/ath10k-5.10/core.h	2021-04-17 06:38:38.398480820 +0300
++++ b/ath10k-5.10/core.h	2021-04-16 13:29:55.607051624 +0300
+@@ -1207,6 +1207,15 @@
+ 	bool hl_msdu_ids;
+ };
+ 
++struct ath10k_brightness_led {
++	struct ath10k *ar;
++	int n; /* number(1, 2) of the led */
++	struct gpio_led wifi_led;
++	struct led_classdev cdev;
++	char label[48];
++	u32 gpio_state_pin;
++};
++
+ struct ath10k {
+ 	struct ath_common ath_common;
+ 	struct ieee80211_hw *hw;
+@@ -1530,12 +1539,8 @@
+ 		bool utf_monitor;
+ 	} testmode;
+ 
+-	struct {
+-		struct gpio_led wifi_led;
+-		struct led_classdev cdev;
+-		char label[48];
+-		u32 gpio_state_pin;
+-	} leds;
++	int leds_count;
++	struct ath10k_brightness_led leds[10];
+ 
+ 	struct {
+ 		/* protected by data_lock */
+diff -rNu a/ath10k-5.10/hw.h b/ath10k-5.10/hw.h
+--- a/ath10k-5.10/hw.h	2021-04-17 06:38:38.390480353 +0300
++++ b/ath10k-5.10/hw.h	2021-04-16 13:29:02.555987274 +0300
+@@ -521,7 +521,6 @@
+ 	const char *name;
+ 	u32 patch_load_addr;
+ 	int uart_pin;
+-	int led_pin;
+ 	u32 otp_exe_param;
+ 
+ 	/* Type of hw cycle counter wraparound logic, for more info
+diff -rNu a/ath10k-5.10/leds.c b/ath10k-5.10/leds.c
+--- a/ath10k-5.10/leds.c	2021-04-17 06:38:38.398480820 +0300
++++ b/ath10k-5.10/leds.c	2021-04-17 06:37:21.726004527 +0300
+@@ -3,6 +3,7 @@
+  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
+  * Copyright (c) 2018 Sebastian Gottschall <s.gottschall@dd-wrt.com>
+  * Copyright (c) 2018, The Linux Foundation. All rights reserved.
++ * Copyright (c) 2021, Serhii Serhieiev <adron@mstnt.com>
+  *
+  * Permission to use, copy, modify, and/or distribute this software for any
+  * purpose with or without fee is hereby granted, provided that the above
+@@ -22,23 +23,43 @@
+ #include "core.h"
+ #include "wmi.h"
+ #include "wmi-ops.h"
++#include "debug.h"
+ 
+ #include "leds.h"
+ 
++#define check_led_pin(ar, a) (ar->leds[a].n != a + 1)
++#define get_led(ar, a) (&ar->leds[a])
++#define get_led_gpio(ar, a) (get_led(ar, a)->wifi_led.gpio)
++
++static void set_led_brightness(struct ath10k_brightness_led *led, enum led_brightness brightness)
++{
++	struct ath10k *ar = led->ar;
++	struct gpio_led *gpio_led;
++
++	if (!led->n)
++		return; /* led not supported or uninitialized led */
++
++	gpio_led = &led->wifi_led;
++	led->gpio_state_pin = (brightness != LED_OFF) ^ gpio_led->active_low;
++	ath10k_wmi_gpio_output(ar, gpio_led->gpio, led->gpio_state_pin);
++}
++
+ static int ath10k_leds_set_brightness_blocking(struct led_classdev *led_cdev,
+ 					       enum led_brightness brightness)
+ {
+-	struct ath10k *ar = container_of(led_cdev, struct ath10k,
+-					 leds.cdev);
+-	struct gpio_led *led = &ar->leds.wifi_led;
++	struct ath10k_brightness_led *led = container_of(led_cdev, struct ath10k_brightness_led, cdev);
++	struct ath10k *ar = led->ar;
++
++	if (!ar)
++		return 0;
+ 
+ 	mutex_lock(&ar->conf_mutex);
+ 
++	/* we can talk to firmware only if state is on ! */
+ 	if (ar->state != ATH10K_STATE_ON)
+ 		goto out;
+ 
+-	ar->leds.gpio_state_pin = (brightness != LED_OFF) ^ led->active_low;
+-	ath10k_wmi_gpio_output(ar, led->gpio, ar->leds.gpio_state_pin);
++	set_led_brightness(led, brightness);
+ 
+ out:
+ 	mutex_unlock(&ar->conf_mutex);
+@@ -48,54 +69,114 @@
+ 
+ int ath10k_leds_start(struct ath10k *ar)
+ {
+-	if (ar->hw_params.led_pin == 0)
+-		/* leds not supported */
+-		return 0;
++	int a;
+ 
+-	/* under some circumstances, the gpio pin gets reconfigured
+-	 * to default state by the firmware, so we need to
+-	 * reconfigure it this behaviour has only ben seen on
+-	 * QCA9984 and QCA99XX devices so far
+-	 */
+-	ath10k_wmi_gpio_config(ar, ar->hw_params.led_pin, 0,
+-			       WMI_GPIO_PULL_NONE, WMI_GPIO_INTTYPE_DISABLE);
+-	ath10k_wmi_gpio_output(ar, ar->hw_params.led_pin, 1);
++	for (a = 0; a < ar->leds_count; a++) {
++		if (check_led_pin(ar, a))
++			continue; /* led not supported or uninitialized led */
++
++		/* under some circumstances, the gpio pin gets reconfigured
++		 * to default state by the firmware, so we need to
++		 * reconfigure it this behaviour has only ben seen on
++		 * QCA9984 and QCA99XX devices so far
++		 */
++		ath10k_wmi_gpio_config(ar, get_led_gpio(ar, a), 0,
++				       WMI_GPIO_PULL_NONE, WMI_GPIO_INTTYPE_DISABLE);
++		set_led_brightness(get_led(ar, a), LED_OFF);
++	}
+ 
+ 	return 0;
+ }
+ 
++void ath10k_leds_turn_off(struct ath10k *ar)
++{
++	int a;
++	for (a = 0; a < ar->leds_count; a++) {
++		if (check_led_pin(ar, a))
++			continue; /* led not supported or uninitialized led */
++		set_led_brightness(get_led(ar, a), LED_OFF);
++	}
++}
++
+ int ath10k_leds_register(struct ath10k *ar)
+ {
+-	int ret;
++	static const char dt_name[ ] = "leds_pins";
++	struct device_node *node;
++	int ret, len, a;
++	u32 *data;
+ 
+-	if (ar->hw_params.led_pin == 0)
+-		/* leds not supported */
++	ar->leds_count = 0;
++
++	if (!ar || !ar->dev)
++		return 0;
++
++	node = ar->dev->of_node;
++
++	if (!node)
++		return 0;
++
++	if (!of_get_property(node, dt_name, &len)) {
++		/* leds_pins is optional */
+ 		return 0;
++	}
+ 
+-	snprintf(ar->leds.label, sizeof(ar->leds.label), "ath10k-%s",
+-		 wiphy_name(ar->hw->wiphy));
+-	ar->leds.wifi_led.active_low = 1;
+-	ar->leds.wifi_led.gpio = ar->hw_params.led_pin;
+-	ar->leds.wifi_led.name = ar->leds.label;
+-	ar->leds.wifi_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
+-
+-	ar->leds.cdev.name = ar->leds.label;
+-	ar->leds.cdev.brightness_set_blocking = ath10k_leds_set_brightness_blocking;
+-	ar->leds.cdev.default_trigger = ar->led_default_trigger;
++	data = kmalloc(len, GFP_KERNEL);
++	if (!data) {
++		return -ENOMEM;
++	}
++
++	len = len / sizeof(data[0]) / 2;
++	if (!len) {
++		ret = 0;
++		goto end;
++	}
+ 
+-	ret = led_classdev_register(wiphy_dev(ar->hw->wiphy), &ar->leds.cdev);
++	if (len > ARRAY_SIZE(ar->leds))
++	len = ARRAY_SIZE(ar->leds);
++
++	ret = of_property_read_u32_array(node, dt_name, data, len * 2);
+ 	if (ret)
+-		return ret;
++		goto end;
+ 
+-	return 0;
++	ar->leds_count = len;
++
++	for (a = 0; a < ar->leds_count; a++) {
++		ar->leds[a].ar = ar;
++		ar->leds[a].n = 0;
++
++		snprintf(ar->leds[a].label, sizeof(ar->leds[a].label), "ath10k-%s-led%d",
++			 wiphy_name(ar->hw->wiphy), a + 1);
++		ar->leds[a].wifi_led.gpio = data[a * 2];
++		ar->leds[a].wifi_led.active_low = data[a * 2 + 1];
++		ar->leds[a].wifi_led.name = ar->leds[a].label;
++		ar->leds[a].wifi_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
++
++		ar->leds[a].cdev.name = ar->leds[a].label;
++		ar->leds[a].cdev.brightness_set_blocking = ath10k_leds_set_brightness_blocking;
++		/* I need to default state is off, but not phy0tpt */
++		//ar->leds[a].cdev.default_trigger = ar->led_default_trigger;
++
++		ret = led_classdev_register(wiphy_dev(ar->hw->wiphy), &ar->leds[a].cdev);
++		if (ret)
++			goto end;
++		ar->leds[a].n = a + 1; //count starts from 1
++		ath10k_info(ar, "configuring %s: gpio %d, ACTIVE_%s\n",
++			ar->leds[a].label, ar->leds[a].wifi_led.gpio,
++			(ar->leds[a].wifi_led.active_low ? "LOW" : "HIGH"));
++	}
++
++end:
++	kfree(data);
++	return ret;
+ }
+ 
+ void ath10k_leds_unregister(struct ath10k *ar)
+ {
+-	if (ar->hw_params.led_pin == 0)
+-		/* leds not supported */
+-		return;
+-
+-	led_classdev_unregister(&ar->leds.cdev);
++	int a;
++	for (a = 0; a < ar->leds_count; a++) {
++		if (check_led_pin(ar, a))
++			continue; /* led not supported or uninitialized led */
++		led_classdev_unregister(&ar->leds[a].cdev);
++		ar->leds[a].n = 0;
++	}
+ }
+-
+diff -rNu a/ath10k-5.10/leds.h b/ath10k-5.10/leds.h
+--- a/ath10k-5.10/leds.h	2021-04-17 06:38:38.390480353 +0300
++++ b/ath10k-5.10/leds.h	2021-04-16 12:17:40.045781744 +0300
+@@ -22,6 +22,7 @@
+ void ath10k_leds_unregister(struct ath10k *ar);
+ int ath10k_leds_start(struct ath10k *ar);
+ int ath10k_leds_register(struct ath10k *ar);
++void ath10k_leds_turn_off(struct ath10k *ar);
+ #else
+ static inline void ath10k_leds_unregister(struct ath10k *ar)
+ {
+@@ -36,6 +37,8 @@
+ {
+ 	return 0;
+ }
++void ath10k_leds_turn_off(struct ath10k *ar){
++}
+ 
+ #endif
+ #endif /* _LEDS_H_ */
+diff -rNu a/ath10k-5.10/mac.c b/ath10k-5.10/mac.c
+--- a/ath10k-5.10/mac.c	2021-04-17 06:38:38.398480820 +0300
++++ b/ath10k-5.10/mac.c	2021-04-16 12:17:51.810444346 +0300
+@@ -5936,6 +5936,7 @@
+ {
+ 	struct ath10k *ar = hw->priv;
+ 
++	ath10k_leds_turn_off(ar);
+ 	ath10k_drain_tx(ar);
+ 
+ 	mutex_lock(&ar->conf_mutex);
