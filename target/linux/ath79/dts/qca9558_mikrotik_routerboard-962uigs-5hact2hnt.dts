@@ -1,47 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later OR MIT
-/dts-v1/;
 
-#include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input.h>
-
-#include "qca955x.dtsi"
+#include "qca9558_mikrotik_routerboard-96x.dtsi"
 
 / {
 	compatible = "mikrotik,routerboard-962uigs-5hact2hnt", "qca,qca9558";
 	model = "MikroTik RouterBOARD 962UiGS-5HacT2HnT";
 
-	aliases {
-		led-boot = &led_run;
-		led-failsafe = &led_run;
-		led-upgrade = &led_run;
-		serial0 = &uart;
-	};
-
-	leds {
-		compatible = "gpio-leds";
-
-		led_run: sfp {
-			label = "green:sfp"; /* sfp */
-			gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
-		};
-	};
-
 	gpio_export {
 		compatible = "gpio-export";
 		#size-cells = <0>;
-
-		buzzer {
-			/* Beeper requires PWM for frequency selection */
-			gpio-export,name = "buzzer";
-			gpio-export,output = <0>;
-			gpios = <&gpio 4 GPIO_ACTIVE_HIGH>;
-		};
-
-		usb_power {
-			gpio-export,name = "usb_power";
-			gpio-export,output = <1>;
-			gpios = <&gpio 13 GPIO_ACTIVE_HIGH>;
-		};
 
 		port5_poe {
 			gpio-export,name = "port5_poe";
@@ -51,46 +18,9 @@
 
 	};
 
-
-	keys {
-		compatible = "gpio-keys";
-
-		reset {
-			label = "reset";
-			linux,code = <KEY_RESTART>;
-			gpios = <&gpio 20 GPIO_ACTIVE_LOW>;
-			debounce-interval = <60>;
-		};
-	};
-
-	sfp_i2c: i2c {
-		compatible = "i2c-gpio";
-		sda-gpios = <&gpio 18 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
-		scl-gpios = <&gpio 19 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
-		i2c-gpio,delay-us = <5>;
-		i2c-gpio,timeout-ms = <1>;
-	};
-
-};
-
-&uart {
-	status = "okay";
 };
 
 &gpio {
-	gpio-line-names =
-		"", "", "PoE out compat", "PoE out", //PoE out ACTIVE_LOW
-		"buzzer", "SPI_CS_0", "SPI_CLK", "SPI_MOSI",
-		"SPI_DATA_IN", "UART_SIN", "UART0_SOUT", "SPI_CS_2",
-		"LED SFP", "USB power", "", "", //LED SFP ACTIVE_LOW
-		"SFP tx-disable", "SFP mod-def0", "i2c sda", "i2c scl", //SFP tx ACTIVE_LOW
-		"reset", "SFP LoS", "", ""; //reset ACTIVE_LOW
-
-	/* OEM firmware GPIOs
-	 * GPIO input 0..2, 8..9, 17, 20..23
-	 * GPIO output 3..7 10..16, 18, 19
-	 * GPIOs 9..11 need pinmux */
-
 	input-poe-out-compat {
 		gpio-hog;
 		gpios = <2 GPIO_ACTIVE_HIGH>;
@@ -99,77 +29,8 @@
 	};
 };
 
-&spi {
-	status = "okay";
-
-	flash@0 {
-		compatible = "jedec,spi-nor";
-		reg = <0>;
-		spi-max-frequency = <40000000>;
-
-		partitions {
-			compatible = "fixed-partitions";
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			partition@0 {
-				label = "RouterBoot";
-				reg = <0x0 0x20000>;
-				read-only;
-				compatible = "mikrotik,routerboot-partitions";
-				#address-cells = <1>;
-				#size-cells = <1>;
-
-				partition@0 {
-					label = "bootloader1";
-					reg = <0x0 0x0>;
-					read-only;
-				};
-
-				factory: hard_config {
-					read-only;
-				};
-
-				bios {
-					size = <0x1000>;
-					read-only;
-				};
-
-				partition@10000 {
-					label = "bootloader2";
-					reg = <0x10000 0x0>;
-					read-only;
-				};
-
-				soft_config {
-					label = "soft_config";
-				};
-
-				sc_eraser {
-					label = "sc_eraser";
-					reg = <0x10000 0x0>;
-					read-only;
-				};
-
-			};
-
-			partition@20000 {
-				compatible = "mikrotik,minor";
-				label = "firmware";
-				reg = <0x020000 0xfe0000>;
-			};
-
-		};
-	};
-};
-
-&uart {
-	status = "okay";
-};
-
 &wmac {
 	status = "okay";
-
 	qca,no-eeprom;
 };
 
@@ -183,142 +44,5 @@
 			 1 - GREEN WLAN, active low
 			 2 - RED WLAN, active low */
 		leds_pins = < 0 0 1 1 2 1>;
-	};
-};
-
-&usb0 {
-	status = "okay";
-};
-
-&usb_phy0 {
-	status = "okay";
-};
-
-&mdio0 {
-	status = "okay";
-
-	switch0@0 {
-		compatible = "qca,qca8337";
-		#address-cells = <1>;
-		#size-cells = <0>;
-		reg = <0x0>;
-		qca,strict-cpu-mode; /* to be able to plug the two ports in the same L2 switch, and it continued to work! */
-		qca,swregs-initvals = <
-			0x00004 0x07400000 /* PAD0_MODE - from vendor firmware: RGMII: { TX/RX_CLK_DELAY_EN, TXCLK_DELAY_SEL := 01 } */
-			0x00010 0x002613A0 /* POWER_ON_STRIP - Disable SERNES_AEN(No port6) and !LED_OPEN_EN(!open_drain) */
-			0x00050 0xc737c737 /* LED_CTRL0 - enable ports act leds blinking on tx/rx */
-			0x00054 0x00000000 /* LED_CTRL1 */
-			0x00058 0x00000000 /* LED_CTRL2 */
-			0x0005c 0x0030c300 /* LED_CTRL3 - configuring leds light time */
-		>;
-		ports {
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			switch0cpu: port@0 {
-				reg = <0>;
-				label = "cpu";
-				ethernet = <&eth0>;
-				phy-mode = "rgmii";
-				fixed-link {
-					speed = <1000>;
-					full-duplex;
-				};
-			};
-
-			port@1 {
-				reg = <1>;
-				label = "wan";
-				mtd-mac-address = <&factory 0x10>;
-				mtd-mac-address-increment = <1>;
-			};
-
-			port@2 {
-				reg = <2>;
-				label = "lan2";
-				mtd-mac-address = <&factory 0x10>;
-				mtd-mac-address-increment = <2>;
-			};
-
-			port@3 {
-				reg = <3>;
-				label = "lan3";
-				mtd-mac-address = <&factory 0x10>;
-				mtd-mac-address-increment = <3>;
-			};
-
-			port@4 {
-				reg = <4>;
-				label = "lan4";
-				mtd-mac-address = <&factory 0x10>;
-				mtd-mac-address-increment = <4>;
-			};
-
-			port@5 {
-				reg = <5>;
-				label = "lan5";
-				mtd-mac-address = <&factory 0x10>;
-				mtd-mac-address-increment = <5>;
-			};
-		};
-	};
-};
-
-
-&eth1 {
-	mdio2: mdio {
-		status = "okay";
-
-		compatible = "virtual,mdio-sfp-i2c";
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		i2c-bus = <&sfp_i2c>;
-		/* this PHY works only for coper(rj-45) SFPs */
-		sfp_phy: ethernet-phy@22 {
-			reg = <22>; /* i2c id 0x56 */
-		};
-	};
-};
-
-&eth0 {
-	status = "okay";
-
-	mtd-mac-address = <&factory 0x10>;
-	max-frame-size = <2074>;
-	no-net-ip-align; /* this iface is for DSA */
-
-	phy-mode = "rgmii";
-	phy-handle = <&switch0cpu>;
-	/* vendor firmware has TX_DELAY 01  */
-	pll-data = <0x8f000000 0x00000101 0x00001616>;
-	/* pl1data gigabit from vendor firmware
-         * 100Mbps & 10Mbps match qca955x.dtsi */
-
-	fixed-link {
-		speed = <1000>;
-		full-duplex;
-	};
-};
-
-&eth1 {
-	status = "okay";
-
-	label = "sfp";
-	mtd-mac-address = <&factory 0x10>;
-	max-frame-size = <2048>;
-	phy-mode = "sgmii";
-	pll-data = <0x03000000 0x00000101 0x00001616>;
-	/* plldata gigabit from vendor firmware
-         * 100Mbps & 10Mbps match qca955x.dtsi */
-	phy-handle = <&sfp_phy>;
-
-	/* this fixed-link PHY is used if coper-sfp(&sfp_phy) is not found */
-	fallback-phy {
-		phy-mode = "sgmii";
-		fixed-link {
-			speed = <1000>;
-			full-duplex;
-		};
 	};
 };
