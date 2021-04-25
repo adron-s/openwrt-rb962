@@ -23,7 +23,7 @@ mikrotik,routerboard-sxt-5nd-r2)
 	ucidef_set_led_rssi "rssimediumhigh" "rssimediumhigh" "green:rssimediumhigh" "wlan0" "60" "100"
 	ucidef_set_led_rssi "rssihigh" "rssihigh" "green:rssihigh" "wlan0" "80" "100"
 	;;
-mikrotik,routerboard-962uigs-5hact2hnt)
+mikrotik,routerboard-960pgs)
 	ucidef_set_led_netdev "sfp" "SFP" "green:sfp" "sfp"
 	;;
 esac

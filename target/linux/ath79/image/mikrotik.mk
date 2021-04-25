@@ -34,10 +34,20 @@ define Device/mikrotik_routerboard-962uigs-5hact2hnt
   DEVICE_MODEL := RouterBOARD 962UiGS-5HacT2HnT (hAP ac)
   IMAGE_SIZE := 16256k
   DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct \
-	kmod-usb2 kmod-sfp
+	kmod-usb2
   SUPPORTED_DEVICES += rb-962uigs-5hact2hnt
 endef
 TARGET_DEVICES += mikrotik_routerboard-962uigs-5hact2hnt
+
+define Device/mikrotik_routerboard-960pgs
+  $(Device/mikrotik_nor)
+  SOC := qca9558
+  DEVICE_MODEL := RouterBOARD 960PGS (hEX PoE)
+  IMAGE_SIZE := 16256k
+  DEVICE_PACKAGES += kmod-usb2
+  SUPPORTED_DEVICES += rb-960pgs
+endef
+TARGET_DEVICES += mikrotik_routerboard-960pgs
 
 define Device/mikrotik_routerboard-lhg-2nd
   $(Device/mikrotik_nor)
